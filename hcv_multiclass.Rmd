@@ -527,59 +527,6 @@ In comparing the performance of the XGBoost, RandomForest, and SVM models across
 
 ## Ensemble
 
-```{r ensemble}
-predictCategory <- function(new_data) {
-  # XGBoost Model
-  xgb_model <- xgboost(data = as.matrix(train_data_xg[, -which(names(train_data_xg) == target_column)]),
-                     label = train_data_xg[[target_column]],
-                     nrounds = 50,
-                     max_depth = 3,
-                     objective = "binary:logistic")
-  
-  # Format validation data
-  validation_data_xg <- new_data
-  validation_data_xg$Category <- ifelse(validation_data_xg$Category == "0=Blood Donor", 1, 0)
-  validation_data_xg$Category <- as.numeric(as.factor(validation_data_xg$Category)) -1
-  
-  # Make predictions on new data
-  xgb_predictions <- predict(xgb_model, newdata = as.matrix(validation_data_xg[, -which(names(validation_data_xg) == target_column)]))
-  # Convert probabilities to class labels based on the threshold
-  threshold <- 0.5
-  xgb_class_labels <- ifelse(xgb_predictions > threshold, "0=Blood Donor", "HCV")
-  xgb_class_labels <- as.factor(xgb_class_labels)
-  
-  # Random Forest Model
-  bagged_model <- randomForest(Category ~ ., data = train_data)
-  # Make predictions on new data
-  rf_predictions <- predict(bagged_model, newdata = new_data)
-  
-  # SVM model
-  svm_model <- svm(Category ~ ., data = train_data, kernel = "radial")
-  # Make predictions on validation data
-  svm_predictions <- predict(svm_model, newdata = new_data)
-  
-  # Majority vote function
-  majority_vote <- function(list1, list2, list3) {
-    # Combine lists of predictions into a matrix
-    all_predictions <- cbind(list1, list2, list3)
-    
-    # Calculate the mode for each row across the three lists
-    majority_predictions <- apply(all_predictions, 1, function(row) {
-      mode_value <- as.character(as.numeric(names(table(row)))[which.max(table(row))])
-      return(mode_value)
-    })
-    
-    return(majority_predictions)
-  }
-  
-  ensemble_predictions <- majority_vote(xgb_class_labels, rf_predictions, svm_predictions)
-  
-  # Return the final prediction
-  return(ensemble_predictions)
-  
-}
-```
-
 ```{r}
 predictCategory <- function(new_data) {
   # XGBoost Model (Multi-class)
@@ -651,6 +598,8 @@ confusion_matrix$table
 confusion_matrix$byClass
 confusion_matrix$overall
 ```
+
+
 The ensemble model demonstrates a robust performance across the three classes, Blood Donor, Hepatitis, and Progressed HCV, as indicated by various metrics such as sensitivity, specificity, precision, NPV, recall, and F1 score. The model shows high precision and perfect recall for the Hepatitis class, indicating a high accuracy in the model's prediciton of Hepatitis with very few false positives. The F1 score is also high (97.96%) achieving a high blance in classification accuracy. The ensemble also performs better compared to the individual models in predicting Progressed HCV, with a higher sensitivity, specificity, precision, recall, and F1 score than the individual models. Most of the model's predictions for Progressed HCV are reliable with 8/10 correctly classified as Progressed HCV, 1/10 misclassified as Blood Donor and 1/10 misclassified as Hepatitis. The kappa of the overall model is high (94.13%) indicating a strong agreement between the model's predictions and the actual classes. We could boost sensitivity and recall in the Progressed HCV class by obtaining more data for Fibrosis and Cirrhosis patients, using class weights, and oversampling the Progressed HCV class. Overall, the ensemble model is highly effective in identifity Blood Donor and Hepatitis classes, with slightly less but strong performance in the Progressed HCV class. The model's ability to maintain high precision and recall across classes is indicative of its robustness in this multi-class classification task.
 
 ## Using Ensemble to Predict New Data
