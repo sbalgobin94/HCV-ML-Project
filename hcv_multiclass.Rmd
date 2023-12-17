@@ -602,6 +602,114 @@ confusion_matrix$overall
 
 The ensemble model demonstrates a robust performance across the three classes, Blood Donor, Hepatitis, and Progressed HCV, as indicated by various metrics such as sensitivity, specificity, precision, NPV, recall, and F1 score. The model shows high precision and perfect recall for the Hepatitis class, indicating a high accuracy in the model's prediciton of Hepatitis with very few false positives. The F1 score is also high (97.96%) achieving a high blance in classification accuracy. The ensemble also performs better compared to the individual models in predicting Progressed HCV, with a higher sensitivity, specificity, precision, recall, and F1 score than the individual models. Most of the model's predictions for Progressed HCV are reliable with 8/10 correctly classified as Progressed HCV, 1/10 misclassified as Blood Donor and 1/10 misclassified as Hepatitis. The kappa of the overall model is high (94.13%) indicating a strong agreement between the model's predictions and the actual classes. We could boost sensitivity and recall in the Progressed HCV class by obtaining more data for Fibrosis and Cirrhosis patients, using class weights, and oversampling the Progressed HCV class. Overall, the ensemble model is highly effective in identifity Blood Donor and Hepatitis classes, with slightly less but strong performance in the Progressed HCV class. The model's ability to maintain high precision and recall across classes is indicative of its robustness in this multi-class classification task.
 
+### K-Cross Validation
+
+```{r kcross}
+balanced_data$Category <- factor(balanced_data$Category, levels = c("0=Blood Donor", "1=Hepatitis", "Progressed HCV"))
+features <- setdiff(names(balanced_data), "Category")
+
+# Number of folds
+k <- 3 
+set.seed(123)  
+folds <- createFolds(balanced_data$Category, k = k, list = TRUE)
+
+# List and matrices for metrics
+results <- list()
+precision_sum <- matrix(0, nrow = length(levels(balanced_data$Category)), ncol = k)
+recall_sum <- matrix(0, nrow = length(levels(balanced_data$Category)), ncol = k)
+f1_sum <- matrix(0, nrow = length(levels(balanced_data$Category)), ncol = k)
+
+
+
+for(i in seq_along(folds)) {
+    # Split the data using stratified folds
+    trainingSet <- balanced_data[folds[[i]], ]
+    validationSet <- balanced_data[-folds[[i]], ]
+
+    # Train the ensemble model and make predictions
+    train_labels_numeric <- as.numeric(as.factor(trainingSet$Category)) - 1
+    train_matrix <- as.matrix(trainingSet[, features])
+    validation_matrix <- as.matrix(validationSet[, features])
+    
+    # Train XGBoost Model
+    xgb_model <- xgboost(data = train_matrix,
+                     label = train_labels_numeric,
+                     params = params,
+                     nrounds = 50)
+
+    # Make predictions on new data
+    xgb_predictions <- predict(xgb_model, newdata = validation_matrix)
+    
+    # Convert predictions to class labels
+    max_prob_index <- matrix(xgb_predictions, ncol = length(unique(trainingSet$Category)), byrow = TRUE)
+    xgb_class_labels <- apply(max_prob_index, 1, which.max) - 1
+    xgb_class_labels <- factor(xgb_class_labels, levels = 0:2, labels = c("0=Blood Donor", "1=Hepatitis", "Progressed HCV"))
+  
+    # Random Forest Model (Multi-class)
+    set.seed(123)
+    bagged_model <- randomForest(Category ~ ., data = trainingSet)
+    rf_predictions <- predict(bagged_model, newdata = validationSet)
+  
+    # SVM model (Multi-class)
+    svm_model <- svm(Category ~ ., data = trainingSet, kernel = "radial")
+    svm_predictions <- predict(svm_model, newdata = validationSet)
+    
+    # Combined predictions
+    combined_predictions <- cbind(xgb_class_labels, rf_predictions, svm_predictions)
+    
+    majority_vote <- function(row) {
+    # Count the occurrences of each class label in the row
+    counts <- table(row)
+    
+    # Get the class label with the maximum count
+    majority_label <- as.character(as.numeric(names(counts)[which.max(counts)]))
+    
+    return(majority_label)
+  }
+    
+    # Majority Vote
+    ensemble_predictions <- apply(combined_predictions, 1, majority_vote)
+    ensemble_predictions <- factor(ensemble_predictions, levels = c("1", "2", "3"), labels = c("0=Blood Donor", "1=Hepatitis", "Progressed HCV"))
+    
+    # Confusion Matrix
+    cm <- confusionMatrix(ensemble_predictions, validationSet$Category)
+    results[[i]] <- cm
+    
+    ## Extracting per-class metrics
+    fold_metrics <- cm$byClass
+    class_levels <- levels(validationSet$Category)
+    
+    for (j in 1:length(class_levels)) {
+        class_name <- paste("Class:", class_levels[j])
+        precision_sum[j, i] <- fold_metrics[class_name, "Precision"]
+        recall_sum[j, i] <- fold_metrics[class_name, "Recall"] 
+        f1_sum[j, i] <- fold_metrics[class_name, "F1"]
+    }
+}
+
+# Calculate average performance across all folds
+avg_performance <- lapply(results, function(x) x$overall)
+avg_performance <- do.call("rbind", avg_performance)
+
+# Calculate average metrics for each class
+average_precision <- rowMeans(precision_sum, na.rm = TRUE)
+average_recall <- rowMeans(recall_sum, na.rm = TRUE)
+average_f1 <- rowMeans(f1_sum, na.rm = TRUE)
+
+# Combine the averages into a data frame
+avg_metrics <- data.frame(
+    Class = levels(balanced_data$Category),
+    Precision = average_precision,
+    Recall = average_recall,
+    F1_Score = average_f1
+)
+
+avg_metrics
+colMeans(avg_performance)
+```
+
+Here we use stratified k-cross validation to further test our ensemble. K-cross validation partitions the dataset in k equally sized folds and for each iteration, the model is trained on "k-1" folds of the data. The remaining 1 fold is used as a test set to evaluate the model. This means that every data point gets to be the test set exactly once and in the training set "k-1" times. This reduces the bias that the model's performance estimate is dependent on the specific way the data is split. This is useful for imbalanced classes. The results show us a similar conclusion to the aforementioned evaluation, however, the recall and F1 score for Progressed HCV is lower, which we hypothesize is due to the class imbalance. More data for Fibrosis and Cirrhosis patients can improve this model.
+
 ## Using Ensemble to Predict New Data
 
 ```{r predictnewdata, echo=TRUE, results='hide'}
