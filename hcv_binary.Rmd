@@ -1,0 +1,505 @@
+---
+title: "BalgobinS.DA5030.Project.Rmd"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-08-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Predicting HCV Infection Using Machine Learning
+
+### This data set contains the lab values of both blood donors and Hep C patients including demographic attributes like age and sex. It is taken from the UC Irvine repository. The target variable is categorical, and we are planning to predict whether an individual has HCV. We will be using binary classification and grouping patients of all stages of hepatitis into one group as there is extreme class imbalance. Hepatitis C is a a viral infection that causes liver inflammation. Fibrosis occurs when where is a limited accumulation of scar tissue, and cirrhosis occurs when there is extensive fibrosis. Among those with a chronic HCV infection, 15-20% progress to end-stage liver disease. HCV remains a significant public health challenge, and in order to reap the benefits of novel therapies, we need a reduction in the undiagnosed population coupled with early diagnosis so that patients can be treated before experiencing the long term ramifications of HCV. 
+
+```{r loadlibraries, echo=FALSE, message=FALSE}
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(dplyr)
+library(class)
+library(klaR)
+library(caret)
+library(rpart)
+library(readxl)
+library(psych)
+library(rsample)
+library(randomForest)
+library(e1071)
+library(pROC)
+library(xgboost)
+```
+
+## Load data
+
+```{r loaddata}
+# Load data from google drive URL
+hcv_data <- read.csv("https://drive.google.com/uc?export=download&id=1IBnIVbW_uSiDxp_kGwkmhk2D3GVEXaQB")
+```
+
+## Explore data
+
+```{r exploredata}
+dim(hcv_data)
+glimpse(hcv_data)
+summary(hcv_data)
+```
+
+From the initial data exploration, we see that the target variable is "Category" and has 5 classes. There are 2 categorical variables, age and sex, and 10 continuous variables which represent the different lab tests and their values. The first column seems to be the patient ID, which we can drop. The mean and median are close for several variables, however the max values are quite far off, indicating a skewed distribution with outliers for some of the variables. ALB, CHOL, and PROT might be normally distributed. We will remove variable X as it is patient ID and not important, and also remove the rows that have 0s= suspected Blood Donor. These likely indicate patients who are suspected to have HCV infection and could likely be in any stage of HCV. This just adds noise to the data so we will remove those patients. Given the extreme class imbalance, we suspect that a multi-class classification model will have very low predictive power. We will do binary classification instead, and group the hepatitis, fibrosis, and cirrhosis patients into one category. 
+
+```{r removedata}
+# Remove ID column
+hcv_data <- subset(hcv_data, select = -X)
+
+# Remove rows with "0s = suspected Blood Donor in category
+hcv_data <- hcv_data %>% filter(Category != "0s=suspect Blood Donor")
+
+# Combine Hep groups into one for binary classification
+vals_to_replace <- c("1=Hepatitis", "2=Fibrosis", "3=Cirrhosis")
+replacement_val <- c("HCV")
+hcv_data <- hcv_data %>%
+  mutate(
+    Category = ifelse(Category %in% vals_to_replace, replacement_val, Category)
+  )
+```
+
+
+```{r distplots}
+# Plot density for each variable
+hist(hcv_data$Age)
+hist(hcv_data$ALB)
+hist(hcv_data$ALP)
+hist(hcv_data$ALT)
+hist(hcv_data$AST)
+hist(hcv_data$BIL)
+hist(hcv_data$CHE)
+hist(hcv_data$CHOL)
+hist(hcv_data$CREA)
+hist(hcv_data$GGT)
+hist(hcv_data$PROT)
+```
+
+Age is fairly normal with a slight right skew. ALB seems normally distributed. Most of ALP's values fall within a small range, however there is a small proportion of outliers. ALT, AST, BIL has a significant right skew. CHE has a normal distribution. CHOL has a fairly normal distribution. CREA has a significant right skew. GGT is right skewed. PROT is slightly left skewed. 
+
+## Identifying Outliers
+
+```{r outliers, echo=FALSE}
+# Function to calculate z score
+calc_z_score <- function(x) {
+  mu <- mean(x, na.rm = TRUE)
+  sd <- sd(x, na.rm = TRUE)
+  (x - mu) / sd
+}
+
+# Calculate z_scores and find outliers for each column
+
+# Age
+z_scores <- calc_z_score(hcv_data$Age)
+range(z_scores, na.rm=TRUE)
+age_out <- which(abs(z_scores) > 2.5, arr.ind = TRUE)
+length(age_out)
+
+# ALB
+z_scores <- calc_z_score(hcv_data$ALB)
+range(z_scores, na.rm=TRUE)
+median(z_scores, na.rm=TRUE)
+alb_out <- which(abs(z_scores) > 4, arr.ind = TRUE)
+length(alb_out)
+
+# ALP
+z_scores <- calc_z_score(hcv_data$ALP)
+range(z_scores, na.rm=TRUE)
+alp_out <- which(abs(z_scores) > 3, arr.ind = TRUE)
+length(alp_out)
+
+# ALT
+z_scores <- calc_z_score(hcv_data$ALT)
+range(z_scores, na.rm=TRUE)
+alt_out <- which(abs(z_scores) > 4, arr.ind = TRUE)
+length(alt_out)
+
+# AST
+z_scores <- calc_z_score(hcv_data$AST)
+range(z_scores, na.rm=TRUE)
+ast_out <- which(abs(z_scores) > 5, arr.ind = TRUE)
+length(ast_out)
+
+# BIL
+z_scores <- calc_z_score(hcv_data$BIL)
+range(z_scores, na.rm=TRUE)
+bil_out <- which(abs(z_scores) > 2.5, arr.ind = TRUE)
+length(bil_out)
+
+# CHE
+z_scores <- calc_z_score(hcv_data$CHE)
+range(z_scores, na.rm=TRUE)
+che_out <- which(abs(z_scores) > 3, arr.ind = TRUE)
+length(che_out)
+
+# CHOL
+z_scores <- calc_z_score(hcv_data$CHOL)
+range(z_scores, na.rm=TRUE)
+chol_out <- which(abs(z_scores) > 3.5, arr.ind = TRUE)
+length(chol_out)
+hist(z_scores)
+
+# CREA
+z_scores <- calc_z_score(hcv_data$CREA)
+range(z_scores, na.rm=TRUE)
+crea_out <- which(abs(z_scores) > 2.5, arr.ind = TRUE)
+length(crea_out)
+hist(z_scores)
+
+# GGT
+z_scores <- calc_z_score(hcv_data$GGT)
+range(z_scores, na.rm=TRUE)
+ggt_out <- which(abs(z_scores) > 4, arr.ind = TRUE)
+length(ggt_out)
+hist(z_scores)
+
+# PROT
+z_scores <- calc_z_score(hcv_data$PROT)
+range(z_scores, na.rm=TRUE)
+prot_out <- which(abs(z_scores) > 3.5, arr.ind = TRUE)
+length(prot_out)
+hist(z_scores)
+```
+
+We looked at the z-scores, range of z-scores, and distribution of both the data and z_scores to identify outliers. We also used domain knowledge to assess whether we should remove certain outliers and which z-score threshold to set. For age, there are only 7 outliers with a z score threshold of 2.5. We chose not to remove these data points as they represent those who have an age a few years above 70 and this is important information as those who are older are more likely to be in later stages of HCV infection. There are only 2 outliers for ALB using a z score threshold of 4. Those represent one high value and one low value, which isn't necessarily correlated with HCV infection and could just indicate dehydration or some other issue. Studies have shown that AST, ALT, and ALP levels are significantly correlated with viral load of HCV. There are 3 outliers using a threshold of 3 for ALP. We won't remove these because these are for the patients with HCV and are important information. Using a threshold of 3 for ALT, we have 8 outliers with most of them for infected patients. To not lose valuable data, we won't remove these outliers. Same applies to AST. Using a threshold of 2.5 for BIL, we see there are 8 outliers. Since these represent high billirubin levels for cirrhosis patients, we will not remove these. High billirubin is usually linked to jaundice which can indicate severe liver disease/cirrhosis. There are not many cirrhosis data points so we don't want to lose data. Using a z score threshold of 3 for CHE, there are 9 outliers. 4 of these represent values in the normal range for CHE, and 5 of those represent abnormal values and are found in patients with HCV infection. Decreased CHE can be due to liver damage. The mean z score for CHE is 2.3. We will keep these outliers as they are important information, aren't too far from the mean z_score, and come from a normal distribution. For CHOL, its unclear what the values represent as there are different types of cholesterol. We won't remove outliers for CHOL given the lack of clarity around its relevance. The range of z scores for CREA has extreme variance. The outliers seem to be for patients who have cirrhosis, which makes sense. At later stages of liver disease, there may also be the co-morbidity of failure of kidneys to remove creatinine, causing increased levels. There are outliers for GGT as well as we get to the hepatitis and cirrhosis patients. We won't remove these few outliers either because literature suggests that the variance in GGT values can help differentiate between fibrosis and more extensive scarring. There are only 4 protein outliers using a z score threshold of 3.5. Not worth removing, especially since the data is normally distributed and we have a small dataset to begin with. In summary, there aren't enough outliers from each variable to warrant removing, some of the outliers are relevant to particular classes, and our data has a class imbalance issue. Therefore we will keep the outliers in the data.
+
+## Correlation and Collinearity
+
+```{r cor}
+# Get numerical columns
+numerical_cols <- hcv_data[, sapply(hcv_data, is.numeric)]
+# Correlation matrix
+cor(numerical_cols, use = "pairwise.complete.obs")
+
+# Distribution and collinearity/correlation
+pairs.panels(hcv_data)
+```
+There seems to be a weak to moderate correlation between GGT and AST and between ALB and PROT. PROT has a weak correlation with the target variable as well as the other variables aside from ALB. Based on domain knowledge, it seems to be far less important to liver function than the other lab values. We will remove PROT from the data. Age and sex also have weak correlation with the target variable, so we will remove those as well. We will not be using PCA as there is a non-linear relationship between features.
+
+## Cleaning and Shaping Data
+
+```{r missingdata}
+# Remove PROT
+hcv_data <- subset(hcv_data, select = -PROT)
+hcv_data <- subset(hcv_data, select = -Age)
+hcv_data <- subset(hcv_data, select = -Sex)
+
+# Find the number of missing values in each column
+missing_counts <- colSums(is.na(hcv_data))
+missing_counts
+
+```
+
+We have some missing data for ALB, ALP, ALT, and CHOL. I don't want to lose information, and given that the data is very skewed, we don't want to take the mean/median for imputation, so we will make the features more normal through transformation before imputation. 
+
+```{r featuretransformation}
+# Let's see if we can transform features to look more normal before imputation
+# ALB
+hist(log(hcv_data$ALB))
+hcv_data$ALB <- log(hcv_data$ALB)
+
+# ALP
+hist(log(hcv_data$ALP))
+hcv_data$ALP <- log(hcv_data$ALP)
+
+# ALT
+hist(log(hcv_data$ALT))
+hcv_data$ALT <- log(hcv_data$ALT)
+
+# AST
+hist(log(hcv_data$AST))
+hist(1/hcv_data$AST)
+hcv_data$AST <- 1 / hcv_data$AST
+
+# BIL
+hist(log(hcv_data$BIL))
+hcv_data$BIL <- log(hcv_data$BIL)
+
+# CREA
+hist(log(hcv_data$CREA))
+hcv_data$CREA <- log(hcv_data$CREA)
+
+# GGT
+hist(log(hcv_data$GGT))
+hcv_data$GGT <- log(hcv_data$GGT)
+```
+
+```{r aftertransformation}
+pairs.panels(hcv_data)
+```
+We transformed the features that were not normally distributed using log transformation or inverse transformation, depending on which transformation produced a more normal distribution. 
+
+```{r imputation}
+# Get numeric columns
+numerical_cols <- sapply(hcv_data, is.numeric)
+
+# Impute NAs with median
+hcv_data[numerical_cols] <- apply(hcv_data[numerical_cols], 2, function(x) {
+  x[is.na(x)] <- median(x, na.rm=TRUE)
+  x
+})
+
+```
+
+Given that the feature distributions were originally skewed and we did not want to lose data given the small sample size and class imbalance, we imputed missing values with the median.
+
+```{r dummycodes}
+# Factoring
+hcv_data$Category <- as.factor(hcv_data$Category)
+```
+
+## Model Construction and Evaluation
+
+```{r trainvalsets}
+# Fixed seed for reproducibility
+set.seed(123)
+
+# Randomize data
+hcv_data <- hcv_data[sample(nrow(hcv_data)), ]
+
+# Create a stratified random train-validation split
+split_indices <- createDataPartition(y = hcv_data$Category, 
+                                     p = 0.2, 
+                                     list = FALSE, 
+                                     times = 1 )
+
+
+# Training data
+train_data <- hcv_data[-split_indices, ]
+
+# Validation data
+validation_data <- hcv_data[split_indices, ]
+```
+
+The data has a significant class imbalance. About 90% of the data falls under "Blood Donor" with only ~ 10% falling under "Hepatitis". We randomize the dataset and use stratified sampling to split the data 80/20 while preserving class distribution in both the training and validation sets.
+
+
+### XGBoost
+
+```{r xgboost}
+# Train XGBoost model
+# Set target variable
+target_column <- "Category"
+
+# Encoding for xgboost
+train_data_xg <- train_data
+validation_data_xg <- validation_data
+
+train_data_xg$Category <- ifelse(train_data_xg$Category == "0=Blood Donor", 1, 0)
+train_data_xg$Category <- as.numeric(as.factor(train_data_xg$Category)) - 1
+validation_data_xg$Category <- ifelse(validation_data_xg$Category == "0=Blood Donor", 1, 0)
+validation_data_xg$Category <- as.numeric(as.factor(validation_data_xg$Category)) -1
+
+# Remove target variable from data to get features
+features <- hcv_data[, !(colnames(data) %in% target_column)]
+
+xgb_model <- xgboost(data = as.matrix(train_data_xg[, -which(names(train_data_xg) == target_column)]),
+                     label = train_data_xg[[target_column]],
+                     nrounds = 50,
+                     max_depth = 3,
+                     objective = "binary:logistic")
+
+# Make predictions on the test data
+xgb_predictions <- predict(xgb_model, newdata = as.matrix(validation_data_xg[, -which(names(validation_data_xg) == target_column)]))
+
+# Convert probabilities to class labels based on the threshold
+threshold <- 0.5
+xgb_class_labels <- ifelse(xgb_predictions > threshold, "0=Blood Donor", "HCV")
+xgb_class_labels <- as.factor(xgb_class_labels)
+
+# Confusion matrix
+confusion_matrix <- confusionMatrix(xgb_class_labels, validation_data$Category)
+confusion_matrix
+
+# Save metrics
+xg_eval1 <- confusion_matrix$byClass
+xg_eval2 <- confusion_matrix$overall
+xg_combined <- c(xg_eval1, xg_eval2)
+names(xg_combined) <- c(names(xg_eval1), names(xg_eval2))
+
+# ROC-AUC
+roc_curve <- roc(validation_data$Category, xgb_predictions)
+roc_auc <- auc(roc_curve)
+
+cat("ROC-AUC:", roc_auc, "\n")
+
+# Visualize ROC-AUC
+plot(roc_curve, main = "ROC Curve for XGBoost Model",
+     xlab = "False Positive Rate", ylab = "True Positive Rate")
+```
+
+XGBoost falls under the category of gradient boosting. It can handle both regression and classification problems and is known for providing high predictive accuracy and handling complex relationships in data. It uses gradient boosting, essentially it is an ensemble learning technique that combines multiple weak learners to create a strong predictive model. It primarily uses decision trees as its base learners. It utilizes boosting by sequentially adding trees to the model. Each tree focuses on correcting the errors made by the previous model. We used a smaller number for the rounds and depth due to the small dataset and class imbalance. We use ROC-AUC, kappa, precision, recall, and F1 score to evaluate the model as these metrics are useful for imbalanced datasets. The model does well, with a kappa of 0.925 indicating a strong agreement between the predicted values and actual data. There is a 0.98 accuracy. Precision of 0.99, pos pred value of 0.99, and negative pred value of 0.93. This model does well at predicting the negative class which happens to be the smallest class. It correctly predicted 106 Blood Donors and incorrectly classified 1 as HCV. It correctly predicted 14 HCV and incorrectly classified 1 as blood donor. The model also has a ROC AUC value of 0.99 which means that it has very high predictive power. We care about this value because we want to ensure that the model has good discriminative power and can distinguish between positive and negative classes, especially given there is a class imbalance. 
+
+### Random Forest
+
+```{r randomforest}
+# Train a bagged model using randomForest
+set.seed(123)
+bagged_model <- randomForest(Category ~ ., data = train_data)
+predictions <- predict(bagged_model, newdata = validation_data)
+
+# Confusion matrix
+confusion_matrix <- confusionMatrix(predictions, validation_data$Category)
+confusion_matrix
+
+# Save metrics
+rf_eval1 <- confusion_matrix$byClass
+rf_eval2 <- confusion_matrix$overall
+rf_combined <- c(rf_eval1, rf_eval2)
+names(rf_combined) <- c(names(rf_eval1), names(rf_eval2))
+
+# Calculate ROC-AUC
+roc_curve <- roc(validation_data$Category, as.numeric(predictions))
+roc_auc <- auc(roc_curve)
+
+# Print ROC-AUC
+cat("ROC-AUC:", roc_auc, "\n")
+
+# Visualize ROC curve
+roc_plot <- ggroc(roc_curve, legacy.axes = TRUE)
+roc_plot <- roc_plot + ggtitle("ROC Curve for Random Forest Model")
+roc_plot <- roc_plot + theme_minimal()
+roc_plot
+```
+
+The Random Forest model is versatile and robust. It can handle class imbalance and non-linearity effectively. It's ensemble nature mitigates overfitting, and works fairly well without extensive parameter tuning. We use roc-auc, kappa, precision, recall, and F1 score to evaluate the model as these metrics are useful for imbalanced datasets. Using the holdout method, the accuracy of this model is 0.95, which indicates that the model might be performing well. We want to check other metrics however, given that most of the predictions were for one class. Looking at the confusion matrix, the model correctly predicted 105 Blood Donor patients and misclassified 4 as HCV. It also correctly predicted 11 HCV patients and misclassified 2 as Blood Donor. We chose to play around with the number of trees from the default value of 500 to 50, 100, 200, 300, and 400 given the small sample size. Too many trees could lead to high variance in predictions on a small dataset, and the model could start memorizing the training data. The accuracy of the model seems to stay the same at the tested number of trees. The precision which measures how many of the predicted positive instances were actually positive is 0.96. The recall, which measures how many actual positive instances were correctly predicted is 0.98. We have a kappa of 0.76 which is a good to substantial agreement between the predictions made by the model and the actual truth in the data. It's important to also consider the Neg Prediction Value or the True Negative Rate as the negative class has far fewer observations. We have a Neg Pred Value of 0.85. The roc-auc value of 0.85 is lower compared to the xgboost model indicating that it has less distinguishing power between positive and negative classes, although its still a fairly decent value. 
+
+### SVM
+
+```{r svm}
+# Train SVM model
+svm_model <- svm(Category ~ ., data = train_data, kernel = "radial")
+
+# Make predictions on validation data
+svm_predictions <- predict(svm_model, newdata = validation_data)
+
+# Confusion matrix
+confusion_matrix <- confusionMatrix(svm_predictions, validation_data$Category)
+confusion_matrix
+
+# Save metrics
+svm_eval1 <- confusion_matrix$byClass
+svm_eval2 <- confusion_matrix$overall
+svm_combined <- c(svm_eval1, svm_eval2)
+names(svm_combined) <- c(names(svm_eval1), names(svm_eval2))
+```
+
+
+SVMs with appropriate kernel functions can be effective in capturing non-linearity. We can address class imbalances by adjusting class weights and tuning kernel parameters. Although the math is complicated, SVMs have a reliable theoretical foundation and perform well in complex scenarios. The different kernel functions help to transform the input data into a higher-dimensional space, which can help capture more complex relationships. We use confusion matrix, kappa, precision, recall, and F1 score to evaluate the model as these metrics are useful for imbalanced datasets. The SVM model performs well with an accuracy of 0.99, precision of 0.99, F1 of 0.99, recall of 1, positive pred value of 0.99 and neg pred value of 1. SVM predicts more accurately for the "Hepatitis" class than the other models. It also has the highest kappa of 0.96, indicating that there is excellent agreement between the model's predictions and the actual data. The model correctly classified 107 Blood Donor patients and misclassified 1 as HCV, and correctly predicted all 14 Hepatitis patients. Given that there is severe class imbalance, there still could be some overfitting of the data. Given that the SVM is performing well on its own, we do not see a need for bagging of the model. There was difficulty trying to obtain the ROC-AUC value for this model so it was not calculated. 
+
+## Model Comparison
+
+```{r comparemodels}
+xg_df <- data.frame(Value = xg_combined)
+dt_df <- data.frame(Value = rf_combined)
+svm_df <- data.frame(Value = svm_combined)
+
+# Combine evaluation data
+combined_matrix <- cbind(xg_df, dt_df, svm_df)
+colnames(combined_matrix) <- c("XGBoost", "Random Forest", "SVM")
+
+combined_matrix
+```
+
+The SVM model had a higher kappa of the three at 0.96, while XGBoost had 0.92 and Random Forest had 0.75. Although XGBoost has the highest accuracy, kappa is more important here as it is useful when dealing with imbalanced datasets. I was mostly concerned with the true negative prediction value as the negative class is much smaller, and SVM has a higher neg pred value. The F1, precision and recall scores for all three models were around the same. Although Random Forest had a high accuracy rate, it had a much lower kappa than the other two models, which could be due to overfitting of the data or the model memorizing the training data. 
+
+## Ensemble
+
+```{r ensemble}
+predictCategory <- function(new_data) {
+  # XGBoost Model
+  xgb_model <- xgboost(data = as.matrix(train_data_xg[, -which(names(train_data_xg) == target_column)]),
+                     label = train_data_xg[[target_column]],
+                     nrounds = 50,
+                     max_depth = 3,
+                     objective = "binary:logistic")
+  
+  # Format validation data
+  validation_data_xg <- new_data
+  validation_data_xg$Category <- ifelse(validation_data_xg$Category == "0=Blood Donor", 1, 0)
+  validation_data_xg$Category <- as.numeric(as.factor(validation_data_xg$Category)) -1
+  
+  # Make predictions on new data
+  xgb_predictions <- predict(xgb_model, newdata = as.matrix(validation_data_xg[, -which(names(validation_data_xg) == target_column)]))
+  # Convert probabilities to class labels based on the threshold
+  threshold <- 0.5
+  xgb_class_labels <- ifelse(xgb_predictions > threshold, "0=Blood Donor", "HCV")
+  xgb_class_labels <- as.factor(xgb_class_labels)
+  
+  # Random Forest Model
+  bagged_model <- randomForest(Category ~ ., data = train_data)
+  # Make predictions on new data
+  rf_predictions <- predict(bagged_model, newdata = new_data)
+  
+  # SVM model
+  svm_model <- svm(Category ~ ., data = train_data, kernel = "radial")
+  # Make predictions on validation data
+  svm_predictions <- predict(svm_model, newdata = new_data)
+  
+  # Majority vote function
+  majority_vote <- function(list1, list2, list3) {
+    # Combine lists of predictions into a matrix
+    all_predictions <- cbind(list1, list2, list3)
+    
+    # Calculate the mode for each row across the three lists
+    majority_predictions <- apply(all_predictions, 1, function(row) {
+      mode_value <- as.character(as.numeric(names(table(row)))[which.max(table(row))])
+      return(mode_value)
+    })
+    
+    return(majority_predictions)
+  }
+  
+  ensemble_predictions <- majority_vote(xgb_class_labels, rf_predictions, svm_predictions)
+  
+  # Return the final prediction
+  return(ensemble_predictions)
+  
+}
+```
+
+Here we create an ensemble is the aggregate of the 3 models and uses majority vote to make predictions. 
+
+## Comparison of Ensemble to Individual Models
+
+```{r compareensembles1}
+predictions <- predictCategory(validation_data)
+predictions <- ifelse(predictions == "1", "0=Blood Donor", "HCV")
+predictions <- as.factor(predictions)
+```
+
+```{r compareensembles2}
+confusion_matrix <- confusionMatrix(predictions, validation_data$Category)
+confusion_matrix$table
+confusion_matrix$byClass
+confusion_matrix$overall
+```
+The ensemble has a kappa of 0.91, precision of 0.98, recall of 1, F1 of 0.99, and high pos pred values and neg pred values. It also correctly predicts 107 Blood Donor patients, and incorrectly predicts 2 to be HCV. It correctly predicts all HCV patients. The SVM model still performs better than the ensemble. The ensemble performs well, but it isn't necessary compared to using a well performing individual model like SVM. 
+
+## Using Ensemble to Predict New Data
+
+```{r predictnewdata}
+# Assuming new data has been transformed and cleaned
+new_data <- data.frame(ALB = 3.1,
+                          ALP = 3.6,
+                          ALT = 0.91,
+                          AST = 0.02,
+                          BIL = 4.01,
+                          CHE = 3.04,
+                          CHOL = 5.00,
+                          CREA = 5.64,
+                          GGT = 4.78,
+                          Category = "")
+# Prediction
+prediction <- predictCategory(new_data)
+prediction <- ifelse(prediction == "1", "0=Blood Donor", "HCV")
+prediction
+```
+
+Assuming that the new input data has been cleaned and transformed, the ensemble model predicts the new data to be HCV. I used lab values that were similar to a patient with HCV and the model predicted the patient to have HCV. 
